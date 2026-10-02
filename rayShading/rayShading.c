@@ -1,16 +1,12 @@
 // uses the h file provided to gain access to stbi_write_png()
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
-// needed for sqrt() and sin()
+// needed for sqrt()
 #include <math.h>
-// General utilities (malloc,drand48)
+// General utilities (calloc)
 #include <stdlib.h>
 // File I/O
 #include <stdio.h>
-
-// TODO Add these new features
-// Reflections
-// Shadows
 
 int width = 512;
 int height = 512;
@@ -22,7 +18,7 @@ typedef struct {
     double x,y,z;
 } vec3;
 
-// Definea a material type
+// Defines a material type
 typedef struct {
      float color[3];
      int reflective;
@@ -78,6 +74,7 @@ vec3 normal(vec3 vector) {
     return result;
 }
 
+// Applies a scalar to a vector
 vec3 scale(vec3 direction, double t) {
     vec3 result;
     result.x = direction.x * t;
@@ -86,6 +83,7 @@ vec3 scale(vec3 direction, double t) {
     return result;
 }
 
+// Get the cross product of two vectors
 vec3 cross(vec3 e1, vec3 e2) {
     vec3 result;
     result.x = ( (e1.y * e2.z) - (e1.z * e2.y) );
@@ -107,6 +105,7 @@ typedef struct {
     vec3 dest; 
 } ray;
 
+// Builds the camera ray for the pixel its currently selected on
 ray getRay(int row, int col) {
     ray result;
     result.origin = (vec3) { 0, 0, 0 };
@@ -130,6 +129,7 @@ typedef struct {
 
 } sphere;
 
+// Tests weather the ray hits a sphere and returns the distance t or -1 on a miss
 double sphereIntersect(ray r1, sphere s1) {
     vec3 oc = subtract(r1.origin, s1.pos);
     double a = dot(r1.dest, r1.dest);
@@ -154,7 +154,7 @@ typedef struct {
     material mat;
 } triangle;
 
-// Implement a triangle intersection function. 
+// Tests weather the ray hits a triangle and returns the distance t or -1 on a miss
 double triangleIntersect(ray r1, triangle t1) {
   
     // compute the 12 values A-L, then M as doubles
@@ -183,7 +183,7 @@ double triangleIntersect(ray r1, triangle t1) {
     // Compute t
     double t = ( (-1 * (F*(A*K - J*B) + E*(J*C - A*L) + D*(B*L - K*C))) / M );
         
-
+    // Checks if the triangle is outside or behind the ray
     if (t < 0) {
         return -1;
     }
@@ -196,9 +196,6 @@ double triangleIntersect(ray r1, triangle t1) {
     
     return t;
 }
-
-
-
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
 // Object Calling
@@ -219,8 +216,35 @@ int numSpheres = 0;
 triangle triangles[100];
 int numTriangles=0;
 
-// TODO Shadow helper function
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+// Shadows
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
+// Return 1 if object blocks the light from hitPoint, otherwise return 0.
+int inShadow(vec3 hitPoint) {
+    vec3 toLight = subtract(light, hitPoint);
+    double lightDist = length(toLight);
+    ray shadowRay;
+    shadowRay.dest = normal(toLight);
+    // The 0.001 nudge prevents shadow acne from occuring
+    shadowRay.origin = add(hitPoint, scale(shadowRay.dest, 0.001));
+
+    double t = 0;
+
+    for (int i = 0; i < numSpheres; i++) {
+        t = sphereIntersect(shadowRay, spheres[i]);
+
+        if (t > 0 && t < lightDist) return 1;
+    }
+
+    for (int j = 0; j < numTriangles; j++) {
+        t = triangleIntersect(shadowRay, triangles[j]);
+        
+        if (t > 0 && t < lightDist) return 1;
+    }
+
+    return 0;
+}
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
 // Scene Builder
@@ -229,12 +253,13 @@ int numTriangles=0;
 unsigned char *scene() {
     // Calculate total bytes Needed for memory allocation
     int bytes = width * height * channels;
+
     // Allocate memory to the heap for the image
     unsigned char *image = calloc(bytes, 1);
 
     // Object Creation
-    spheres[0] = (sphere) { .pos = { 0,0,-16 }, .radius = 2, .mat = blue };
-    spheres[1] = (sphere) { .pos = { 3,-1,-14 }, .radius = 1, .mat = white };
+    spheres[0] = (sphere) { .pos = { 0,0,-16 }, .radius = 2, .mat = refl };
+    spheres[1] = (sphere) { .pos = { 3,-1,-14 }, .radius = 1, .mat = refl };
     spheres[2] = (sphere) { .pos = { -3,-1,-14 }, .radius = 1, .mat = red };
     numSpheres = 3;
    
@@ -258,79 +283,113 @@ unsigned char *scene() {
             ray r1;
             r1 = getRay(y, x);
 
-            // Calculate if a ray hits a sphere based on the heiarchy of closest to camera
-            double closestT = -1;
-            int closestIndex = -1;
-            int hitTriangle = 0;
-            for (int i = 0; i < numSpheres; i++) {
-                double currentS = sphereIntersect(r1, spheres[i]);
+            for (int bounce = 0; bounce < 10; bounce++) {
+
+                // Calculate if a ray hits a sphere or a triangle based on the heiarchy of closest to camera
+                double closestT = -1;
+                int closestIndex = -1;
+                int hitTriangle = 0;
+                for (int i = 0; i < numSpheres; i++) {
+                    double currentS = sphereIntersect(r1, spheres[i]);
                 
-                if (currentS > 0 && (closestT < 0 || currentS < closestT)) {
-                    closestT = currentS;
-                    closestIndex = i;
-                    hitTriangle = 0;
+                    if (currentS > 0 && (closestT < 0 || currentS < closestT)) {
+                        closestT = currentS;
+                        closestIndex = i;
+                        hitTriangle = 0;
+                    }
                 }
-            }
-            for (int i = 0; i < numTriangles; i++) {
-                double currentT = triangleIntersect(r1, triangles[i]);
+                for (int i = 0; i < numTriangles; i++) {
+                    double currentT = triangleIntersect(r1, triangles[i]);
                 
-                if (currentT > 0 && (closestT < 0 || currentT < closestT)) {
-                    closestT = currentT;
-                    closestIndex = i;
-                    hitTriangle = 1;
-                }
-            }
-
-            if (closestT > 0) {
-                if (hitTriangle == 1 && triangles[closestIndex].mat.reflective == 0) {
-                    
-                    vec3 hitPoint = add(r1.origin, scale(r1.dest, closestT));
-
-                    // Calculates the norm of current triangle
-                    vec3 edge1 = subtract(triangles[closestIndex].v[1], triangles[closestIndex].v[0]);
-                    vec3 edge2 = subtract(triangles[closestIndex].v[2], triangles[closestIndex].v[0]);
-                    vec3 surfaceNormal = normal(cross(edge1, edge2));
-                    
-                    // Calculate the vector pointing at the light from the location where the ray hit. hard code this as global variable
-                    vec3 lightDir = normal(subtract(light, hitPoint));
-
-                    // Take the dot product of the normal vector and the vector pointing toward the light. Store in diffuse (if diffuse < 0.2 then diffuse = 0.2)
-                    double diffuse = dot(surfaceNormal, lightDir);
-                    if (diffuse < 0.2) diffuse = 0.2;
-
-                    image[index] = triangles[closestIndex].mat.color[0] * diffuse * 255;
-                    image[index+1] = triangles[closestIndex].mat.color[1] * diffuse * 255;
-                    image[index+2] = triangles[closestIndex].mat.color[2] * diffuse * 255;
-
+                    if (currentT > 0 && (closestT < 0 || currentT < closestT)) {
+                        closestT = currentT;
+                        closestIndex = i;
+                        hitTriangle = 1;
+                    }
                 }
 
-
-                // When reflective == 0, calculate the norm of the surface the ray hits. (different for spheres vs triangles)
-                if (hitTriangle == 0 && spheres[closestIndex].mat.reflective == 0) {
+                if (closestT > 0) {
+                    if (hitTriangle == 1 && triangles[closestIndex].mat.reflective == 0) {
                     
-                    vec3 hitPoint = add(r1.origin, scale(r1.dest, closestT));
+                        vec3 hitPoint = add(r1.origin, scale(r1.dest, closestT));
 
-                    // Calculates the norm of current sphere
-                    vec3 surfaceNormal = normal(subtract(hitPoint, spheres[closestIndex].pos));
+                        // Calculates the norm of current triangle
+                        vec3 edge1 = subtract(triangles[closestIndex].v[1], triangles[closestIndex].v[0]);
+                        vec3 edge2 = subtract(triangles[closestIndex].v[2], triangles[closestIndex].v[0]);
+                        vec3 surfaceNormal = normal(cross(edge1, edge2));
+                    
+                        // Calculate the vector pointing at the light from the location where the ray hit. 
+                        vec3 lightDir = normal(subtract(light, hitPoint));
 
-                    // Calculate the vector pointing at the light from the location where the ray hit. hard code this as global variable
-                    vec3 lightDir = normal(subtract(light, hitPoint));
+                        // Take the dot product of the normal vector and the vector pointing toward the light. Store in diffuse (if diffuse < 0.2 then diffuse = 0.2)
+                        double diffuse = dot(surfaceNormal, lightDir);
+                        if (diffuse < 0.2) diffuse = 0.2;
+                        if (inShadow(hitPoint) == 1) diffuse = 0.2;
 
-                    // Take the dot product of the normal vector and the vector pointing toward the light. Store in diffuse (if diffuse < 0.2 then diffuse = 0.2)
-                    double diffuse = dot(surfaceNormal, lightDir);
-                    if (diffuse < 0.2) diffuse = 0.2;
+                        image[index] = triangles[closestIndex].mat.color[0] * diffuse * 255;
+                        image[index+1] = triangles[closestIndex].mat.color[1] * diffuse * 255;
+                        image[index+2] = triangles[closestIndex].mat.color[2] * diffuse * 255;
+                        break;
+                    }
 
-                    image[index] = spheres[closestIndex].mat.color[0] * diffuse * 255;
-                    image[index+1] = spheres[closestIndex].mat.color[1] * diffuse * 255;
-                    image[index+2] = spheres[closestIndex].mat.color[2] * diffuse * 255;
+                    // When reflective == 0, calculate the norm of the surface the ray hits. (different for spheres vs triangles)
+                    if (hitTriangle == 0 && spheres[closestIndex].mat.reflective == 0) {
+                    
+                        vec3 hitPoint = add(r1.origin, scale(r1.dest, closestT));
 
+                        // Calculates the norm of current sphere
+                        vec3 surfaceNormal = normal(subtract(hitPoint, spheres[closestIndex].pos));
+
+                        // Calculate the vector pointing at the light from the location where the ray hit. 
+                        vec3 lightDir = normal(subtract(light, hitPoint));
+
+                        // Take the dot product of the normal vector and the vector pointing toward the light. Store in diffuse (if diffuse < 0.2 then diffuse = 0.2)
+                        double diffuse = dot(surfaceNormal, lightDir);
+                        if (diffuse < 0.2) diffuse = 0.2;
+                        if (inShadow(hitPoint) == 1) diffuse = 0.2;
+                    
+                        image[index] = spheres[closestIndex].mat.color[0] * diffuse * 255;
+                        image[index+1] = spheres[closestIndex].mat.color[1] * diffuse * 255;
+                        image[index+2] = spheres[closestIndex].mat.color[2] * diffuse * 255;
+                        break;
+                    }
+
+
+                    if (hitTriangle == 1 && triangles[closestIndex].mat.reflective == 1) {
+              
+                         vec3 hitPoint = add(r1.origin, scale(r1.dest, closestT));
+    
+                        // Calculates the norm of current triangle
+                        vec3 edge1 = subtract(triangles[closestIndex].v[1], triangles[closestIndex].v[0]);
+                        vec3 edge2 = subtract(triangles[closestIndex].v[2], triangles[closestIndex].v[0]);
+                        vec3 surfaceNormal = normal(cross(edge1, edge2));
+                    
+                         // Calculate the reflection using the formula r = d - 2(d*n)n
+                        double dn = dot(r1.dest, surfaceNormal);
+                        r1.dest = subtract(r1.dest, scale(surfaceNormal, 2*dn) );
+                        r1.origin = add(hitPoint, scale(r1.dest, 0.001));
+                    }
+                
+                    if (hitTriangle == 0 && spheres[closestIndex].mat.reflective == 1) {
+                    
+                        vec3 hitPoint = add(r1.origin, scale(r1.dest, closestT));
+
+                        // Calculates the norm of current sphere
+                        vec3 surfaceNormal = normal(subtract(hitPoint, spheres[closestIndex].pos));
+
+                       
+                        // Calculate the reflection using the formula r = d - 2(d*n)n
+                        double dn = dot(r1.dest, surfaceNormal);
+                        r1.dest = subtract(r1.dest, scale(surfaceNormal, 2*dn) );
+                        r1.origin = add(hitPoint, scale(r1.dest, 0.001));
+                    }
                 }
-
-            }
-            else {
-                image[index] = 0;
-                image[index+1] = 0;
-                image[index+2] = 0;
+                else {
+                    image[index] = 0;
+                    image[index+1] = 0;
+                    image[index+2] = 0;
+                    break;
+                }
             }
         }
     }
